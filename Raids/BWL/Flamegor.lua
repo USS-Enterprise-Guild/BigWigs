@@ -1,9 +1,9 @@
 
 local module, L = BigWigs:ModuleDeclaration("Flamegor", "Blackwing Lair")
 
-module.revision = 30085
+module.revision = 3008617011
 module.enabletrigger = module.translatedName
-module.toggleoptions = {"wingbuffet", "shadowflame", "frenzy", "bosskill"}
+module.toggleoptions = {"wingbuffet", "shadowflame", "frenzy", "overbearingrage", "bosskill"}
 
 L:RegisterTranslations("enUS", function() return {
 	cmd = "Flamegor",
@@ -19,6 +19,10 @@ L:RegisterTranslations("enUS", function() return {
 	frenzy_cmd = "frenzy",
 	frenzy_name = "Frenzy Alert",
 	frenzy_desc = "Warn for Frenzy",
+
+	overbearingrage_cmd = "overbearingrage",
+	overbearingrage_name = "Overbearing Rage Alert",
+	overbearingrage_desc = "Warn for Overbearing Rage tank debuff",
 	
 	
 	trigger_wingBuffet = "Flamegor begins to cast Wing Buffet.", --CHAT_MSG_SPELL_CREATURE_VS_CREATURE_DAMAGE
@@ -37,6 +41,13 @@ L:RegisterTranslations("enUS", function() return {
 	bar_frenzyCd = "Frenzy CD",
 	bar_frenzyDur = "Frenzy!",
 	msg_frenzy = "Frenzy - Tranq now!",
+
+	trigger_overbearingRageYou = "You are afflicted by Overbearing Rage", --CHAT_MSG_SPELL_PERIODIC_SELF_DAMAGE
+	trigger_overbearingRageOther2 = "(.+) %(.+%) is afflicted by Overbearing Rage", --CHAT_MSG_SPELL_PERIODIC_PARTY_DAMAGE // CHAT_MSG_SPELL_PERIODIC_FRIENDLYPLAYER_DAMAGE
+	trigger_overbearingRageOther = "(.+) is afflicted by Overbearing Rage", --CHAT_MSG_SPELL_PERIODIC_PARTY_DAMAGE // CHAT_MSG_SPELL_PERIODIC_FRIENDLYPLAYER_DAMAGE
+	trigger_overbearingRageFade = "Overbearing Rage fades from (.+).", --CHAT_MSG_SPELL_AURA_GONE_SELF // CHAT_MSG_SPELL_AURA_GONE_PARTY // CHAT_MSG_SPELL_AURA_GONE_OTHER
+	bar_overbearingRage = " Overbearing Rage",
+	msg_overbearingRage = " Overbearing Rage!",
 } end)
 
 local timer = {
@@ -50,12 +61,15 @@ local timer = {
 	
 	frenzyCd = 10,
 	frenzyDur = 10,
+
+	overbearingRage = 12,
 }
 local icon = {
 	wingBuffet = "INV_Misc_MonsterScales_14",
 	shadowFlame = "Spell_Fire_Incinerate",
 	frenzy = "Ability_Druid_ChallangingRoar",
 	tranquil = "Spell_Nature_Drowsy",
+	overbearingRage = "Ability_Warrior_InnerRage",
 }
 local color = {
 	wingBuffetCd = "Cyan",
@@ -66,13 +80,37 @@ local color = {
 	
 	frenzyCd = "Black",
 	frenzyDur = "Magenta",
+
+	overbearingRage = "Yellow",
 }
 local syncName = {
 	wingBuffet = "FlamegorWingBuffet"..module.revision,
 	shadowFlame = "FlamegorShadowflame"..module.revision,
 	frenzy = "FlamegorFrenzyStart"..module.revision,
 	frenzyFade = "FlamegorFrenzyEnd"..module.revision,
+	overbearingRage = "FlamegorOverbearingRage"..module.revision,
+	overbearingRageFade = "FlamegorOverbearingRageFade"..module.revision,
 }
+
+-- Backward compat: accept syncs from any older revision
+local syncBases = {}
+do
+	local revLen = string.len(tostring(module.revision))
+	for k, v in pairs(syncName) do
+		syncBases[string.sub(v, 1, string.len(v) - revLen)] = v
+	end
+end
+local function translateSync(sync)
+	for base, currentName in pairs(syncBases) do
+		if string.sub(sync, 1, string.len(base)) == base then
+			local rev = tonumber(string.sub(sync, string.len(base) + 1))
+			if rev and rev < module.revision then
+				return currentName
+			end
+		end
+	end
+	return sync
+end
 
 local frenzyStartTime = 0
 local frenzyEndTime = 0
@@ -81,16 +119,24 @@ function module:OnEnable()
 	--self:RegisterEvent("CHAT_MSG_SAY", "Event") --Debug
 	
 	self:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_CREATURE_BUFFS", "Event") --trigger_frenzy
-	
-	self:RegisterEvent("CHAT_MSG_SPELL_AURA_GONE_OTHER", "Event") --trigger_frenzyFade
-	
+
+	self:RegisterEvent("CHAT_MSG_SPELL_AURA_GONE_SELF", "Event") --trigger_overbearingRageFade
+	self:RegisterEvent("CHAT_MSG_SPELL_AURA_GONE_PARTY", "Event") --trigger_overbearingRageFade
+	self:RegisterEvent("CHAT_MSG_SPELL_AURA_GONE_OTHER", "Event") --trigger_frenzyFade, trigger_overbearingRageFade
+
 	self:RegisterEvent("CHAT_MSG_SPELL_CREATURE_VS_CREATURE_DAMAGE", "Event") --trigger_wingBuffet, trigger_shadowFlame
-	
-	
+
+	self:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_SELF_DAMAGE", "Event") --trigger_overbearingRageYou
+	self:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_PARTY_DAMAGE", "Event") --trigger_overbearingRageOther
+	self:RegisterEvent("CHAT_MSG_SPELL_PERIODIC_FRIENDLYPLAYER_DAMAGE", "Event") --trigger_overbearingRageOther
+
+
 	self:ThrottleSync(3, syncName.wingBuffet)
 	self:ThrottleSync(3, syncName.shadowFlame)
 	self:ThrottleSync(5, syncName.frenzy)
 	self:ThrottleSync(1, syncName.frenzyFade)
+	self:ThrottleSync(3, syncName.overbearingRage)
+	self:ThrottleSync(3, syncName.overbearingRageFade)
 end
 
 function module:OnSetup()
@@ -130,11 +176,28 @@ function module:Event(msg)
 		self:Sync(syncName.frenzy)
 	elseif msg == L["trigger_frenzyFade"] then
 		self:Sync(syncName.frenzyFade)
+
+	elseif msg == L["trigger_overbearingRageYou"] then
+		self:Sync(syncName.overbearingRage .. " " .. UnitName("Player"))
+
+	elseif string.find(msg, L["trigger_overbearingRageOther2"]) then
+		local _,_,orPlayer,_ = string.find(msg, L["trigger_overbearingRageOther2"])
+		self:Sync(syncName.overbearingRage .. " " .. orPlayer)
+	elseif string.find(msg, L["trigger_overbearingRageOther"]) then
+		local _,_,orPlayer,_ = string.find(msg, L["trigger_overbearingRageOther"])
+		self:Sync(syncName.overbearingRage .. " " .. orPlayer)
+
+	elseif string.find(msg, L["trigger_overbearingRageFade"]) then
+		local _,_,orFadePlayer,_ = string.find(msg, L["trigger_overbearingRageFade"])
+		if orFadePlayer == "you" then orFadePlayer = UnitName("Player") end
+		self:Sync(syncName.overbearingRageFade .. " " .. orFadePlayer)
 	end
 end
 
 
 function module:BigWigs_RecvSync(sync, rest, nick)
+	sync = translateSync(sync)
+
 	if sync == syncName.wingBuffet and self.db.profile.wingbuffet then
 		self:WingBuffet()
 	elseif sync == syncName.shadowFlame and self.db.profile.shadowflame then
@@ -143,6 +206,13 @@ function module:BigWigs_RecvSync(sync, rest, nick)
 		self:Frenzy()
 	elseif sync == syncName.frenzyFade and self.db.profile.frenzy then
 		self:FrenzyFade()
+
+	elseif sync == syncName.overbearingRage and rest and self.db.profile.overbearingrage then
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:OverbearingRage(rest) end
+	elseif sync == syncName.overbearingRageFade and rest and self.db.profile.overbearingrage then
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:OverbearingRageFade(rest) end
 	end
 end
 
@@ -182,8 +252,17 @@ end
 function module:FrenzyFade()
 	self:RemoveBar(L["bar_frenzyDur"])
 	self:RemoveWarningSign(icon.tranquil)
-	
+
 	frenzyEndTime = GetTime()
-	
+
 	self:Bar(L["bar_frenzyCd"], timer.frenzyCd - (frenzyEndTime - frenzyStartTime), icon.frenzy, true, color.frenzyCd)
+end
+
+function module:OverbearingRage(rest)
+	self:Bar(rest..L["bar_overbearingRage"], timer.overbearingRage, icon.overbearingRage, true, color.overbearingRage)
+	self:Message(rest..L["msg_overbearingRage"], "Important", false, nil, false)
+end
+
+function module:OverbearingRageFade(rest)
+	self:RemoveBar(rest..L["bar_overbearingRage"])
 end

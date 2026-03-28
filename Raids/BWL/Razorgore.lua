@@ -2,9 +2,9 @@
 local module, L = BigWigs:ModuleDeclaration("Razorgore the Untamed", "Blackwing Lair")
 local controller = AceLibrary("Babble-Boss-2.2")["Grethok the Controller"]
 
-module.revision = 30085
+module.revision = 3008617011
 module.enabletrigger = {"Razorgore the Untamed", "Grethok the Controller"}
-module.toggleoptions = {"polymorph", "dominatemind", "icon", "slow", -1, "phase", "eggs", "orb", "mindexhaustion", -1, "volley", "conflagration", "warstomp", "bosskill"}
+module.toggleoptions = {"polymorph", "dominatemind", "icon", "slow", -1, "phase", "eggs", "orb", "mindexhaustion", "marksman", -1, "volley", "conflagration", "warstomp", "bosskill"}
 
 L:RegisterTranslations("enUS", function() return {
 	cmd = "Razorgore",
@@ -42,6 +42,10 @@ L:RegisterTranslations("enUS", function() return {
 	mindexhaustion_cmd = "mindexhaustion",
 	mindexhaustion_name = "Mind Exhaustion Alert",
 	mindexhaustion_desc = "Warn for Mind Exhaustion",
+
+	marksman_cmd = "marksman",
+	marksman_name = "Blackwing Marksman Alert",
+	marksman_desc = "Warn for Blackwing Marksman Aimed Shot",
 	
 --Phase 3
 	volley_cmd = "volley",
@@ -93,7 +97,7 @@ L:RegisterTranslations("enUS", function() return {
 	
 		--check for eggCast, if no re-cast or mindExhaustionFade within 3sec -> destroyed
 	bar_eggsCounter = "Eggs Left",
-	msg_eggCounter = "/30 Eggs Destroyed",
+	msg_eggCounter = "/20 Eggs Destroyed",
 	
 	trigger_mindExhaustionYou = "You are afflicted by Mind Exhaustion.", --CHAT_MSG_SPELL_PERIODIC_SELF_DAMAGE
 	trigger_mindExhaustionOther = "(.+) is afflicted by Mind Exhaustion.", --CHAT_MSG_SPELL_PERIODIC_PARTY_DAMAGE // CHAT_MSG_SPELL_PERIODIC_FRIENDLYPLAYER_DAMAGE
@@ -130,6 +134,9 @@ L:RegisterTranslations("enUS", function() return {
 	trigger_warStomp = "Razorgore the Untamed's War Stomp", --CHAT_MSG_SPELL_CREATURE_VS_SELF_DAMAGE // CHAT_MSG_SPELL_CREATURE_VS_PARTY_DAMAGE // CHAT_MSG_SPELL_CREATURE_VS_CREATURE_DAMAGE
 	bar_warStompDur = "War Stomped",
 	bar_warStompCd = "War Stomp CD",
+
+	trigger_marksman = "Blackwing Marksman", --CHAT_MSG_SPELL_CREATURE_VS_SELF_DAMAGE // CHAT_MSG_SPELL_CREATURE_VS_PARTY_DAMAGE
+	msg_marksman = "Blackwing Marksman — Kill Priority!",
 } end)
 
 local timer = {
@@ -226,7 +233,28 @@ local syncName = {
 	conflagrationFade = "RazorgoreConflagrationFade"..module.revision,
 	
 	warStomp = "RazorgoreWarStomp"..module.revision,
+	marksman = "RazorgoreMarksman"..module.revision,
 }
+
+-- Backward compat: accept syncs from any older revision
+local syncBases = {}
+do
+	local revLen = string.len(tostring(module.revision))
+	for k, v in pairs(syncName) do
+		syncBases[string.sub(v, 1, string.len(v) - revLen)] = v
+	end
+end
+local function translateSync(sync)
+	for base, currentName in pairs(syncBases) do
+		if string.sub(sync, 1, string.len(base)) == base then
+			local rev = tonumber(string.sub(sync, string.len(base) + 1))
+			if rev and rev < module.revision then
+				return currentName
+			end
+		end
+	end
+	return sync
+end
 
 local phase = "phase1"
 local eggsDestroyed = 0
@@ -281,6 +309,7 @@ function module:OnEnable()
 	self:ThrottleSync(3, syncName.conflagrationFade)
 	
 	self:ThrottleSync(3, syncName.warStomp)
+	self:ThrottleSync(10, syncName.marksman)
 end
 
 function module:OnSetup()
@@ -297,7 +326,7 @@ function module:OnEngage()
 	addDead = 0
 	
 	if self.db.profile.eggs then
-		self:TriggerEvent("BigWigs_StartCounterBar", self, L["bar_eggsCounter"], 30, "Interface\\Icons\\"..icon.egg, true, color.eggBar)
+		self:TriggerEvent("BigWigs_StartCounterBar", self, L["bar_eggsCounter"], 20, "Interface\\Icons\\"..icon.egg, true, color.eggBar)
 		self:TriggerEvent("BigWigs_SetCounterBar", self, L["bar_eggsCounter"], eggsDestroyed)
 	end
 	self:ScheduleRepeatingEvent("Razorgore_OrbControlCheck", self.OrbControlCheck, 0.5, self)
@@ -423,6 +452,9 @@ function module:Event(msg)
 	
 	elseif string.find(msg, L["trigger_warStomp"]) then
 		self:Sync(syncName.warStomp)
+
+	elseif string.find(msg, L["trigger_marksman"]) then
+		self:Sync(syncName.marksman)
 	end
 end
 
@@ -434,51 +466,66 @@ function module:Razorgore_DestroyEgg()
 end
 
 function module:BigWigs_RecvSync(sync, rest, nick)
+	sync = translateSync(sync)
+
 	if sync == syncName.polymorph and rest and self.db.profile.polymorph then
-		self:Polymorph(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:Polymorph(rest) end
 	elseif sync == syncName.polymorphFade and rest and self.db.profile.polymorph then
-		self:PolymorphFade(rest)
-		
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:PolymorphFade(rest) end
+
 	elseif sync == syncName.mc and rest and self.db.profile.dominatemind then
-		self:Mc(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:Mc(rest) end
 	elseif sync == syncName.mcFade and rest and self.db.profile.dominatemind then
-		self:McFade(rest)
-		
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:McFade(rest) end
+
 	elseif sync == syncName.slow and self.db.profile.slow then
 		self:Slow()
-		
-		
+
+
 --Phase 2
 	elseif sync == syncName.orb and rest and self.db.profile.orb then
-		self:Orb(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:Orb(rest) end
 	elseif sync == syncName.orbFade and rest and self.db.profile.orb then
-		self:OrbFade(rest)
-		
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:OrbFade(rest) end
+
 	elseif sync == syncName.mindExhaustion and rest and self.db.profile.mindexhaustion then
-		self:MindExhaustion(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:MindExhaustion(rest) end
 	elseif sync == syncName.mindExhaustionFade and rest and self.db.profile.mindexhaustion then
-		self:MindExhaustionFade(rest)
-		
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:MindExhaustionFade(rest) end
+
 	elseif sync == syncName.destroyEggCast and self.db.profile.eggs then
 		self:DestroyEggCast()
 	elseif sync == syncName.eggDestroyed and self.db.profile.eggs then
 		self:EggDestroyed()
 
-		
+
 --Phase 3
 	elseif sync == syncName.phase3 then
 		self:Phase3()
-		
+
 	elseif sync == syncName.volley and self.db.profile.volley then
 		self:Volley()
-		
+
 	elseif sync == syncName.conflagration and rest and self.db.profile.conflagration then
-		self:Conflagration(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:Conflagration(rest) end
 	elseif sync == syncName.conflagrationFade and rest and self.db.profile.conflagration then
-		self:ConflagrationFade(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:ConflagrationFade(rest) end
 		
 	elseif sync == syncName.warStomp and self.db.profile.warstomp then
 		self:WarStomp()
+
+	elseif sync == syncName.marksman and self.db.profile.marksman then
+		self:Marksman()
 	end
 end
 
@@ -662,6 +709,11 @@ end
 
 function module:WarStomp()
 	self:Bar(L["bar_warStompDur"], timer.warStompDur, icon.warStomp, true, color.warStompDur)
-	
+
 	self:DelayedBar(timer.warStompDur, L["bar_warStompCd"], timer.warStompCd, icon.warStomp, true, color.warStompCd)
+end
+
+function module:Marksman()
+	self:Message(L["msg_marksman"], "Urgent", false, nil, false)
+	self:Sound("Info")
 end

@@ -2,7 +2,7 @@
 local module, L = BigWigs:ModuleDeclaration("Nefarian", "Blackwing Lair")
 local victor = AceLibrary("Babble-Boss-2.2")["Lord Victor Nefarius"]
 
-module.revision = 30086
+module.revision = 3008717011
 module.enabletrigger = {"Nefarian", "Lord Victor Nefarius"}
 module.toggleoptions = {
 	"mc",
@@ -161,8 +161,8 @@ L:RegisterTranslations("enUS", function() return {
 	
 	msg_classCall_Druid = "Druid Class Call - Stuck in Cat Form!",
 	msg_classCall_Hunter = "Hunter Class Call - Ranged Weapons Broken!",
-	msg_classCall_Mage = "Mage Class Call - Random Sheeps - Mages Ice Block or Get Away!",
-	msg_classCall_Paladin = "Paladin Class Call - Blessing of Protection on Nefarian!",
+	msg_classCall_Mage = "Mage Class Call - Wild Magic! Mages Ice Block or Get Away!",
+	msg_classCall_Paladin = "Paladin Class Call - Siphon Blessing - Blessings stripped!",
 	msg_classCall_Priest = "Priest Class Call - Direct Heals Hurt - Use Renew / Shield only!",
 	msg_classCall_Rogue = "Rogue Class Call - Rogues Teleported and Rooted - Turn the Boss!",
 	msg_classCall_Shaman = "Shaman Class Call - Kill Totems!",
@@ -329,6 +329,26 @@ local syncName = {
 	boneConstructs = "NefarianBoneConstructs"..module.revision,
 }
 
+-- Backward compat: accept syncs from any older revision
+local syncBases = {}
+do
+	local revLen = string.len(tostring(module.revision))
+	for k, v in pairs(syncName) do
+		syncBases[string.sub(v, 1, string.len(v) - revLen)] = v
+	end
+end
+local function translateSync(sync)
+	for base, currentName in pairs(syncBases) do
+		if string.sub(sync, 1, string.len(base)) == base then
+			local rev = tonumber(string.sub(sync, string.len(base) + 1))
+			if rev and rev < module.revision then
+				return currentName
+			end
+		end
+	end
+	return sync
+end
+
 local drakonidsSelfCount = 0
 local drakonidsDead = 0
 local drakonidsDeadMax = 44 -- nef spawns at 40 dead, add stop summoning at 44
@@ -341,6 +361,8 @@ local blackFound = nil
 local bronzeFound = nil
 local bopNefFadeCheck = nil
 local pallyCallTime = 0
+local lastClassCallTime = 0
+local classCallPairCount = 0
 
 function module:OnEnable()
 	--self:RegisterEvent("CHAT_MSG_SAY", "Event") --Debug
@@ -422,6 +444,8 @@ function module:OnEngage()
 	bronzeFound = nil
 	bopNefFadeCheck = nil
 	pallyCallTime = 0
+	lastClassCallTime = 0
+	classCallPairCount = 0
 
 	self:Bar(L["bar_mobsSpawn"], timer.mobSpawn, icon.phase, true, color.phase)
 
@@ -595,11 +619,15 @@ end
 
 
 function module:BigWigs_RecvSync(sync, rest, nick)
+	sync = translateSync(sync)
+
 --Phase 1
 	if sync == syncName.mc and rest and self.db.profile.mc then
-		self:Mc(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:Mc(rest) end
 	elseif sync == syncName.mcFade and rest and self.db.profile.mc then
-		self:McFade(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:McFade(rest) end
 
 	elseif sync == syncName.addDead and rest and self.db.profile.drakonidcounter then
 		self:DrakonidCounter(rest)
@@ -623,17 +651,21 @@ function module:BigWigs_RecvSync(sync, rest, nick)
 		self:Fear()
 
 	elseif sync == syncName.curse and rest and self.db.profile.curse then
-		self:Curse(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:Curse(rest) end
 	elseif sync == syncName.curseFade and rest and self.db.profile.curse then
-		self:CurseFade(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:CurseFade(rest) end
 
 	elseif sync == syncName.classCall and rest and self.db.profile.classcall then
 		self:ClassCall(rest)
 
 	elseif sync == syncName.wildPolymorph and rest and self.db.profile.wildpolymorph then
-		self:WildPolymorph(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:WildPolymorph(rest) end
 	elseif sync == syncName.wildPolymorphFade and rest and self.db.profile.wildpolymorph then
-		self:WildPolymorphFade(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:WildPolymorphFade(rest) end
 
 	elseif sync == syncName.corruptedHealing and self.db.profile.corruptedhealing then
 		self:CorruptedHealing()
@@ -826,9 +858,19 @@ function module:CurseFade(rest)
 end
 
 function module:ClassCall(rest)
-	self:RemoveBar(L["bar_classCall"].." CD")
-	self:CancelDelayedBar(L["bar_classCall"].." Soon")
-	self:RemoveBar(L["bar_classCall"].." Soon")
+	local now = GetTime()
+	if (now - lastClassCallTime) > 5 then
+		-- First call of a pair
+		self:RemoveBar(L["bar_classCall"].." CD")
+		self:CancelDelayedBar(L["bar_classCall"].." Soon")
+		self:RemoveBar(L["bar_classCall"].." Soon")
+		self:CancelDelayedMessage(L["msg_classCall_soon3"])
+		lastClassCallTime = now
+		classCallPairCount = 1
+	else
+		-- Second call of a pair
+		classCallPairCount = 2
+	end
 
 	self:Bar(rest.." "..L["bar_classCall"], timer.classCallDur, icon.classCall, true, color.classCallDur)
 	self:Message(L["msg_classCall_"..rest], "Positive", false, nil, false)
@@ -837,19 +879,25 @@ function module:ClassCall(rest)
 		self:Sound("Beware")
 		self:WarningSign(icon[rest], 2, true, "YOUR CLASS CALL")
 	end
-	
+
 	if rest == "Paladin" then
 		self:ThrottleSync(1, syncName.bopNef)
 		bopNefFadeCheck = nil
 		self:CancelScheduledEvent("Nefarian_BopNef_EnableFadeCheck")
 		self:ScheduleEvent("Nefarian_BopNef_EnableFadeCheck", self.BopNef_EnableFadeCheck, 30, self)
-		
+
 		pallyCallTime = GetTime()
 	end
-	
-	--class call is every 25-35sec, dur is 30sec, 2 class calls can overlap by 5sec, can also have 5sec without class call
-	self:DelayedBar(timer.classCallDur, L["bar_classCall"].." Soon", timer.classCallCd[2] - timer.classCallDur, icon.classCall, true, color.classCallCd)
-	self:DelayedMessage(timer.classCallDur - 8, L["msg_classCall_soon3"], "Personal", false, nil, false)
+
+	-- Only schedule next-call warning from the second call of the pair (or first if no pair arrives)
+	if classCallPairCount == 2 then
+		self:DelayedBar(timer.classCallDur, L["bar_classCall"].." Soon", timer.classCallCd[2] - timer.classCallDur, icon.classCall, true, color.classCallCd)
+		self:DelayedMessage(timer.classCallDur - 8, L["msg_classCall_soon3"], "Personal", false, nil, false)
+	else
+		-- Schedule as fallback; will be cancelled if second call arrives
+		self:DelayedBar(timer.classCallDur, L["bar_classCall"].." Soon", timer.classCallCd[2] - timer.classCallDur, icon.classCall, true, color.classCallCd)
+		self:DelayedMessage(timer.classCallDur - 8, L["msg_classCall_soon3"], "Personal", false, nil, false)
+	end
 end
 
 function module:WildPolymorph(rest)

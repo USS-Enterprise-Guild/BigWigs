@@ -1,9 +1,9 @@
 
 local module, L = BigWigs:ModuleDeclaration("Broodlord Lashlayer", "Blackwing Lair")
 
-module.revision = 30085
+module.revision = 3008617011
 module.enabletrigger = module.translatedName
-module.toggleoptions = {"ms", "bw", "knock", -1, "targeticon", "bosskill"}
+module.toggleoptions = {"ms", "bw", "knock", "serratedwound", -1, "targeticon", "bosskill"}
 
 L:RegisterTranslations("enUS", function() return {
 	cmd = "Broodlord",
@@ -20,6 +20,10 @@ L:RegisterTranslations("enUS", function() return {
 	knock_name = "Knock Away Alert",
 	knock_desc = "Warn for Knock Away",
 	
+	serratedwound_cmd = "serratedwound",
+	serratedwound_name = "Serrated Wound Alert",
+	serratedwound_desc = "Warn for Serrated Wound bleed DoT",
+
 	targeticon_cmd = "targeticon",
 	targeticon_name = "Skull Icon on Bloodlord's Target",
 	targeticon_desc = "Put a Skull Raid Icon on Bloodlord's Target",
@@ -45,6 +49,12 @@ L:RegisterTranslations("enUS", function() return {
 	trigger_knock = "Broodlord Lashlayer's Knock Away", --CHAT_MSG_SPELL_CREATURE_VS_SELF_DAMAGE // CHAT_MSG_SPELL_CREATURE_VS_PARTY_DAMAGE // CHAT_MSG_SPELL_CREATURE_VS_CREATURE_DAMAGE
 	bar_knockCd = "Knock Away CD",
 	bar_knockSoon = "Knock Away Soon...",
+
+	trigger_serratedWoundYou = "You are afflicted by Serrated Wound", --CHAT_MSG_SPELL_PERIODIC_SELF_DAMAGE
+	trigger_serratedWoundOther = "(.+) is afflicted by Serrated Wound", --CHAT_MSG_SPELL_PERIODIC_PARTY_DAMAGE // CHAT_MSG_SPELL_PERIODIC_FRIENDLYPLAYER_DAMAGE
+	trigger_serratedWoundFade = "Serrated Wound fades from (.+).", --CHAT_MSG_SPELL_AURA_GONE_SELF // CHAT_MSG_SPELL_AURA_GONE_PARTY // CHAT_MSG_SPELL_AURA_GONE_OTHER
+	bar_serratedWound = " Serrated Wound",
+	msg_serratedWound = " Serrated Wound - Heal through!",
 } end )
 
 local timer = {
@@ -60,11 +70,14 @@ local timer = {
 	knockFirstSoon = 5,
 	knockCd = 12,--first is 20-25, next are 12,25
 	knockSoon = 13,
+
+	serratedWound = 6,
 }
 local icon = {
 	ms = "Ability_Warrior_SavageBlow",
 	bw = "Spell_Holy_Excorcism_02",
 	knock = "INV_Gauntlets_05",
+	serratedWound = "ability_rogue_rupture",
 }
 local color = {
 	msCd = "Black",
@@ -76,13 +89,37 @@ local color = {
 	
 	knockCd = "Cyan",
 	knockSoon = "Blue",
+
+	serratedWound = "Red",
 }
 local syncName = {
 	ms = "BroodlordMs"..module.revision,
 	msFade = "BroodlordMsFade"..module.revision,
 	bw = "BroodlordBlastWave"..module.revision,
 	knock = "BroodlordKnockAway"..module.revision,
+	serratedWound = "BroodlordSerratedWound"..module.revision,
+	serratedWoundFade = "BroodlordSerratedWoundFade"..module.revision,
 }
+
+-- Backward compat: accept syncs from any older revision
+local syncBases = {}
+do
+	local revLen = string.len(tostring(module.revision))
+	for k, v in pairs(syncName) do
+		syncBases[string.sub(v, 1, string.len(v) - revLen)] = v
+	end
+end
+local function translateSync(sync)
+	for base, currentName in pairs(syncBases) do
+		if string.sub(sync, 1, string.len(base)) == base then
+			local rev = tonumber(string.sub(sync, string.len(base) + 1))
+			if rev and rev < module.revision then
+				return currentName
+			end
+		end
+	end
+	return sync
+end
 
 module:RegisterYellEngage(L["trigger_engage"])
 
@@ -106,6 +143,8 @@ function module:OnEnable()
 	self:ThrottleSync(3, syncName.msFade)
 	self:ThrottleSync(3, syncName.bw)
 	self:ThrottleSync(3, syncName.knock)
+	self:ThrottleSync(3, syncName.serratedWound)
+	self:ThrottleSync(3, syncName.serratedWoundFade)
 end
 
 function module:OnSetup()
@@ -165,21 +204,44 @@ function module:Event(msg)
 		
 	elseif string.find(msg, L["trigger_knock"]) then
 		self:Sync(syncName.knock)
+
+	elseif msg == L["trigger_serratedWoundYou"] then
+		self:Sync(syncName.serratedWound .. " " .. UnitName("Player"))
+
+	elseif string.find(msg, L["trigger_serratedWoundOther"]) then
+		local _,_,swPlayer,_ = string.find(msg, L["trigger_serratedWoundOther"])
+		self:Sync(syncName.serratedWound .. " " .. swPlayer)
+
+	elseif string.find(msg, L["trigger_serratedWoundFade"]) then
+		local _,_,swFadePlayer,_ = string.find(msg, L["trigger_serratedWoundFade"])
+		if swFadePlayer == "you" then swFadePlayer = UnitName("Player") end
+		self:Sync(syncName.serratedWoundFade .. " " .. swFadePlayer)
 	end
 end
 
 
 function module:BigWigs_RecvSync(sync, rest, nick)
+	sync = translateSync(sync)
+
 	if sync == syncName.ms and rest and self.db.profile.ms then
-		self:Ms(rest)
+		if rest ~= "msEvade" then rest = self:ValidatePlayerSync(rest, sync, nick) end
+		if rest then self:Ms(rest) end
 	elseif sync == syncName.msFade and rest and self.db.profile.ms then
-		self:MsFade(rest)
-	
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:MsFade(rest) end
+
 	elseif sync == syncName.bw and self.db.profile.bw then
 		self:BW()
-		
+
 	elseif sync == syncName.knock and self.db.profile.knock then
 		self:Knock()
+
+	elseif sync == syncName.serratedWound and rest and self.db.profile.serratedwound then
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:SerratedWound(rest) end
+	elseif sync == syncName.serratedWoundFade and rest and self.db.profile.serratedwound then
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:SerratedWoundFade(rest) end
 	end
 end
 
@@ -218,7 +280,16 @@ end
 function module:Knock()
 	self:CancelDelayedBar(L["bar_knockSoon"])
 	self:RemoveBar(L["bar_knockSoon"])
-	
+
 	self:Bar(L["bar_knockCd"], timer.knockCd, icon.knock, true, color.knockCd)
 	self:DelayedBar(timer.knockCd, L["bar_knockSoon"], timer.knockSoon, icon.knock, true, color.knockSoon)
+end
+
+function module:SerratedWound(rest)
+	self:Bar(rest..L["bar_serratedWound"], timer.serratedWound, icon.serratedWound, true, color.serratedWound)
+	self:Message(rest..L["msg_serratedWound"], "Important", false, nil, false)
+end
+
+function module:SerratedWoundFade(rest)
+	self:RemoveBar(rest..L["bar_serratedWound"])
 end

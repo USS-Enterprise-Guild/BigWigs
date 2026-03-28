@@ -786,6 +786,25 @@ end
 function BigWigs.modulePrototype:BigWigs_RecvSync(sync, rest, nick)
 end
 
+function BigWigs.modulePrototype:IsPlayerInRaid(name)
+	if not name or name == "" then return false end
+	for i = 1, GetNumRaidMembers() do
+		if UnitName("raid" .. i) == name then return true end
+	end
+	for i = 1, GetNumPartyMembers() do
+		if UnitName("party" .. i) == name then return true end
+	end
+	return UnitName("player") == name
+end
+
+function BigWigs.modulePrototype:ValidatePlayerSync(rest, sync, nick)
+	if not rest or rest == "" then return nil end
+	if self:IsPlayerInRaid(rest) then return rest end
+
+	self:DebugMessage("Ignored sync from " .. (nick or "unknown") .. ": " .. (sync or "?") .. " rest=" .. tostring(rest) .. " (not in raid)")
+	return nil
+end
+
 -- test function
 function BigWigs.modulePrototype:Test()
 	BigWigs:Print("No tests defined for module " .. self:ToString())

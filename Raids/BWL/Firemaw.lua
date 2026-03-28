@@ -1,9 +1,9 @@
 
 local module, L = BigWigs:ModuleDeclaration("Firemaw", "Blackwing Lair")
 
-module.revision = 30085
+module.revision = 3008617011
 module.enabletrigger = module.translatedName
-module.toggleoptions = {"wingbuffet", "shadowflame", "flamebuffet", "stacks", "bosskill"}
+module.toggleoptions = {"wingbuffet", "shadowflame", "flamebuffet", "stacks", "adds", "bosskill"}
 
 L:RegisterTranslations("enUS", function() return {
 	cmd = "Firemaw",
@@ -23,6 +23,10 @@ L:RegisterTranslations("enUS", function() return {
 	stacks_cmd = "stacks",
 	stacks_name = "High Flame Buffet Stacks Alert",
 	stacks_desc = "Warn for High Flame Buffet Stacks",
+
+	adds_cmd = "adds",
+	adds_name = "Shadowflame Jet Alert",
+	adds_desc = "Warn for Shadowflame Jet adds",
 	
 	
 	trigger_wingBuffet = "Firemaw begins to cast Wing Buffet.", --CHAT_MSG_SPELL_CREATURE_VS_CREATURE_DAMAGE
@@ -47,6 +51,9 @@ L:RegisterTranslations("enUS", function() return {
 	
 	trigger_flameBuffetYou = "You are afflicted by Flame Buffet %((.+)%).", --CHAT_MSG_SPELL_PERIODIC_SELF_DAMAGE
 	msg_flameBuffetYou = " Flame Buffet Stacks - Consider losing your stacks",
+
+	trigger_shadowflameJet = "Shadowflame Jet's Shadowflame Explosion", --CHAT_MSG_SPELL_CREATURE_VS_SELF_DAMAGE
+	msg_shadowflameJet = "Shadowflame Jet — AoE Incoming!",
 } end)
 
 local timer = {
@@ -78,7 +85,28 @@ local syncName = {
 	wingBuffet = "FiremawWingBuffet"..module.revision,
 	shadowFlame = "FiremawShadowflame"..module.revision,
 	flameBuffet = "FiremawFlameBuffet"..module.revision,
+	shadowflameJet = "FiremawShadowflameJet"..module.revision,
 }
+
+-- Backward compat: accept syncs from any older revision
+local syncBases = {}
+do
+	local revLen = string.len(tostring(module.revision))
+	for k, v in pairs(syncName) do
+		syncBases[string.sub(v, 1, string.len(v) - revLen)] = v
+	end
+end
+local function translateSync(sync)
+	for base, currentName in pairs(syncBases) do
+		if string.sub(sync, 1, string.len(base)) == base then
+			local rev = tonumber(string.sub(sync, string.len(base) + 1))
+			if rev and rev < module.revision then
+				return currentName
+			end
+		end
+	end
+	return sync
+end
 
 function module:OnEnable()
 	--self:RegisterEvent("CHAT_MSG_SAY", "Event") --Debug
@@ -93,6 +121,7 @@ function module:OnEnable()
 	self:ThrottleSync(3, syncName.wingBuffet)
 	self:ThrottleSync(3, syncName.shadowFlame)
 	self:ThrottleSync(1.5, syncName.flameBuffet)
+	self:ThrottleSync(5, syncName.shadowflameJet)
 end
 
 function module:OnSetup()
@@ -127,6 +156,9 @@ function module:Event(msg)
 	elseif string.find(msg, L["trigger_flameBuffet"]) then
 		self:Sync(syncName.flameBuffet)
 	
+	elseif string.find(msg, L["trigger_shadowflameJet"]) then
+		self:Sync(syncName.shadowflameJet)
+
 	elseif string.find(msg, L["trigger_flameBuffetYou"]) and self.db.profile.stacks then
 		local _,_,stacks,_ = string.find(msg, L["trigger_flameBuffetYou"])
 		local stacksNum = tonumber(stacks)
@@ -138,12 +170,17 @@ end
 
 
 function module:BigWigs_RecvSync(sync, rest, nick)
+	sync = translateSync(sync)
+
 	if sync == syncName.wingBuffet and self.db.profile.wingbuffet then
 		self:WingBuffet()
 	elseif sync == syncName.shadowFlame and self.db.profile.shadowflame then
 		self:ShadowFlame()
 	elseif sync == syncName.flameBuffet and self.db.profile.flamebuffet then
 		self:FlameBuffet()
+
+	elseif sync == syncName.shadowflameJet and self.db.profile.adds then
+		self:ShadowflameJet()
 	end
 end
 
@@ -169,6 +206,11 @@ end
 
 function module:FlameBuffet()
 	self:IntervalBar(L["bar_flameBuffet"], timer.flameBuffet[1], timer.flameBuffet[2], icon.flameBuffet, true, color.flameBuffet)
+end
+
+function module:ShadowflameJet()
+	self:Message(L["msg_shadowflameJet"], "Urgent", false, nil, false)
+	self:Sound("Alarm")
 end
 
 function module:FlameBuffetStacks(stacksNum)

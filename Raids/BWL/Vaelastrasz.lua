@@ -1,9 +1,9 @@
 
 local module, L = BigWigs:ModuleDeclaration("Vaelastrasz the Corrupt", "Blackwing Lair")
 
-module.revision = 30085
+module.revision = 3008617011
 module.enabletrigger = module.translatedName
-module.toggleoptions = {"start", "adrenaline", "icon","flamebreath", "flamebreathdot", "firenova", "tailsweep", "parry", "bosskill"}
+module.toggleoptions = {"start", "adrenaline", "icon","flamebreath", "flamebreathdot", "firenova", "blazeofglory", "tailsweep", "parry", "bosskill"}
 
 L:RegisterTranslations("enUS", function() return {
 	cmd = "Vaelastrasz",
@@ -32,6 +32,10 @@ L:RegisterTranslations("enUS", function() return {
 	firenova_name = "Fire Nova Alert",
 	firenova_desc = "Warn for Fire Nova",
 	
+	blazeofglory_cmd = "blazeofglory",
+	blazeofglory_name = "Blaze of Glory Alert",
+	blazeofglory_desc = "Warn for Blaze of Glory stacking debuff",
+
 	tailsweep_cmd = "tailsweep",
 	tailsweep_name = "Tail Sweep Alert",
 	tailsweep_desc = "Warn for Tail Sweep",
@@ -73,6 +77,10 @@ L:RegisterTranslations("enUS", function() return {
 	trigger_fireNova = "Vaelastrasz the Corrupt's Fire Nova", --CHAT_MSG_SPELL_CREATURE_VS_SELF_DAMAGE // CHAT_MSG_SPELL_CREATURE_VS_PARTY_DAMAGE // CHAT_MSG_SPELL_CREATURE_VS_CREATURE_DAMAGE
 	bar_fireNova = "Fire Nova CD",
 	
+	trigger_blazeOfGlory = "afflicted by Blaze of Glory", --CHAT_MSG_SPELL_PERIODIC_SELF_DAMAGE // CHAT_MSG_SPELL_PERIODIC_PARTY_DAMAGE // CHAT_MSG_SPELL_PERIODIC_FRIENDLYPLAYER_DAMAGE
+	trigger_blazeOfGloryFade = "Blaze of Glory fades from", --CHAT_MSG_SPELL_AURA_GONE_SELF // CHAT_MSG_SPELL_AURA_GONE_PARTY // CHAT_MSG_SPELL_AURA_GONE_OTHER
+	msg_blazeOfGlory = "Blaze of Glory",
+
 	trigger_tailSweepYou = "Vaelastrasz the Corrupt's Tail Sweep hits you", --CHAT_MSG_SPELL_CREATURE_VS_SELF_DAMAGE
 	msg_tailSweep = "Tail Sweep hits behind the boss for 30 yards.",
 	
@@ -132,9 +140,30 @@ local syncName = {
 	fireNova = "VaelFireNova"..module.revision,
 }
 
+-- Backward compat: accept syncs from any older revision
+local syncBases = {}
+do
+	local revLen = string.len(tostring(module.revision))
+	for k, v in pairs(syncName) do
+		syncBases[string.sub(v, 1, string.len(v) - revLen)] = v
+	end
+end
+local function translateSync(sync)
+	for base, currentName in pairs(syncBases) do
+		if string.sub(sync, 1, string.len(base)) == base then
+			local rev = tonumber(string.sub(sync, string.len(base) + 1))
+			if rev and rev < module.revision then
+				return currentName
+			end
+		end
+	end
+	return sync
+end
+
 local engaged = nil
 local adrenalineCount = 1
 local adrenalinePlayers = {}
+local blazeOfGloryStacks = 0
 
 function module:OnEnable()
 	--self:RegisterEvent("CHAT_MSG_SAY", "Event") --Debug
@@ -181,6 +210,7 @@ function module:OnEngage()
 	engaged = true
 	adrenalineCount = 1
 	adrenalinePlayers = {}
+	blazeOfGloryStacks = 0
 	
 	self:RemoveBar(L["bar_gossip"])
 	
@@ -271,6 +301,12 @@ function module:Event(msg)
 	elseif string.find(msg, L["trigger_fireNova"]) then
 		self:Sync(syncName.fireNova)
 		
+	elseif string.find(msg, L["trigger_blazeOfGlory"]) and self.db.profile.blazeofglory then
+		self:BlazeOfGlory()
+
+	elseif string.find(msg, L["trigger_blazeOfGloryFade"]) and self.db.profile.blazeofglory then
+		self:BlazeOfGloryFade()
+
 	elseif string.find(msg, L["trigger_tailSweepYou"]) and self.db.profile.tailsweep then
 		self:TailSweep()
 		
@@ -285,6 +321,8 @@ end
 
 
 function module:BigWigs_RecvSync(sync, rest, nick)
+	sync = translateSync(sync)
+
 	if sync == syncName.gossip1 and self.db.profile.start then
 		self:Gossip1()
 	elseif sync == syncName.gossip2 and self.db.profile.start then
@@ -296,17 +334,21 @@ function module:BigWigs_RecvSync(sync, rest, nick)
 		self:Adrenaline()
 		
 	elseif sync == syncName.adrenalinePlayer and rest and self.db.profile.adrenaline then
-		self:AdrenalinePlayer(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:AdrenalinePlayer(rest) end
 	elseif sync == syncName.adrenalinePlayerFade and rest and self.db.profile.adrenaline then
-		self:AdrenalinePlayerFade(rest)
-	
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:AdrenalinePlayerFade(rest) end
+
 	elseif sync == syncName.flameBreath and self.db.profile.flamebreath then
 		self:FlameBreath()
-		
+
 	elseif sync == syncName.flameBreathDot and rest and self.db.profile.flamebreath then
-		self:FlameBreathDot(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:FlameBreathDot(rest) end
 	elseif sync == syncName.flameBreathDotFade and rest and self.db.profile.flamebreath then
-		self:FlameBreathDotFade(rest)
+		rest = self:ValidatePlayerSync(rest, sync, nick)
+		if rest then self:FlameBreathDotFade(rest) end
 	
 	elseif sync == syncName.fireNova and self.db.profile.firenova then
 		self:FireNova()
@@ -450,6 +492,15 @@ end
 
 function module:FireNova()
 	self:IntervalBar(L["bar_fireNova"], timer.fireNovaCd[1], timer.fireNovaCd[2], icon.fireNova, true, color.fireNovaCd)
+end
+
+function module:BlazeOfGlory()
+	blazeOfGloryStacks = blazeOfGloryStacks + 1
+	self:Message(L["msg_blazeOfGlory"].." x"..blazeOfGloryStacks.."!", "Important", false, nil, false)
+end
+
+function module:BlazeOfGloryFade()
+	blazeOfGloryStacks = 0
 end
 
 function module:ParryYou()
