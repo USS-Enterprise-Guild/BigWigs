@@ -49,6 +49,7 @@ BabbleZone:RegisterTranslations("enUS", function()
 		["Stormwind Vault"] = true,
 		["Sunnyglade Valley"] = true,
 		["Tel'Abim"] = true,
+		["Timbermaw Hold"] = true,
 		["Winter Veil Vale"] = true,
 		["Ahn'Qiraj"] = true,
 		["Alterac Mountains"] = true,
